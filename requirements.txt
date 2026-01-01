@@ -1,0 +1,9 @@
+openai>=1.40.0
+python-dotenv>=1.0.1
+python-telegram-bot>=21.6
+youtube-transcript-api>=0.6.2
+notion-client>=2.2.1
+PyYAML>=6.0.2
+langchain-community>=0.3.0
+langdetect>=1.0.9
+pytube>=15.0.0

@@ -1,0 +1,96 @@
+prompts:
+  transcript_summary:
+    current: v1
+    versions:
+      v1:
+        system: "You are a helpful assistant that summarizes YouTube transcripts for a knowledge base. Keep answers concise and structured."
+        chunk_user: |
+          Summarize this transcript chunk. Use concise bullet points and keep key facts.
+
+          Transcript chunk:
+          {{chunk}}
+        combine_user: |
+          Combine the chunk summaries into a final response.
+          Provide:
+          1) A short overview (3-5 sentences)
+          2) Key points (5-10 bullets)
+          3) Action items or takeaways (if any)
+
+          Chunk summaries:
+          {{chunks}}
+
+  readability:
+    current: v1
+    versions:
+      v1:
+        system: "You improve transcript readability without changing meaning."
+        user: |
+          I provide you with a text in {{language}}, which is part of an audio transcript.
+          Your task is to transform this automated YouTube transcript into readable text:
+          - break it into meaningful sentences and paragraphs
+          - apply correct punctuation
+          - remove interjections or filler words
+          - correct obvious misrecognized words
+          - format it as a dialogue if it’s an interview
+          Strict rules:
+          - Do not shorten the text
+          - Do not change its meaning
+          - Do not add any new content
+
+          Text:
+          {{text}}
+
+  translation_to_ru:
+    current: v1
+    versions:
+      v1:
+        system: "You translate text to Russian without altering meaning."
+        user: |
+          I provide you with a text in {{language}}, which is part of an audio transcript.
+          Your task is to translate this text into Russian.
+          Strict rules:
+          - Do not change sense
+          - Do not remove, shorten or add anything
+
+          Text:
+          {{text}}
+
+  structure_markdown:
+    current: v1
+    versions:
+      v1:
+        system: "You are an editor that structures spoken text into Markdown."
+        user: |
+          Ты — редактор, специализирующийся на структурировании устной речи для получения читаемого и логичного текста.
+
+          Твоя задача — превратить расшифровку в полный, не сокращённый, подробный Markdown-текст для Notion.
+
+          Строгие требования:
+          - Не сокращай текст. Не обобщай.
+          - Каждый смысловой фрагмент, пример, метафора, идея, уточнение, уточняющее повторение и рассуждение должны быть переданы в итоговом тексте.
+          - Не объединяй схожие мысли и не упрощай их.
+          - Не выкидывай даже кажущиеся незначительными пояснения и повторения, если они не являются явной «водой» типа «эээ», «ну» и пр.
+          - Итоговый текст по объёму должен быть максимально близок к исходному.
+            Допустимы только технические сокращения — устранение «паразитов» и организационных вставок, оформление структуры.
+
+          Структура:
+          - Разбей текст на логические блоки и абзацы
+          - Добавь заголовки H2 и H3 («##», «###»), отражающие тему каждого блока
+          - Сохраняй хронологию и последовательность мыслей без сокращения содержания
+
+          Выделения:
+          - Ключевые идеи — в **жирном**
+          - Примеры, метафоры, кейсы — в *курсиве*
+
+          Язык и стиль:
+          - Убирай только междометия, речевые паразиты, организационные вставки («сейчас я расшарю экран» и т.п.)
+          - Все смысловые, описательные, уточняющие и поясняющие фрагменты должны быть сохранены
+          - Не добавляй свои мысли. Не переформулируй и не обобщай оригинальный текст
+          - Если что-то кажется тебе избыточным, всё равно оставь — это важно для полноты и нюансов устной речи
+          - Переписывай только для лучшей читаемости, но не для сокращения
+          - Не повторяй текстовые блоки — каждый смысловой фрагмент должен присутствовать только один раз
+          - Проверь результат: если в тексте встречаются дублирующиеся абзацы, убери их
+          - Результат — только Markdown, без JSON и служебных полей
+
+          Стенограмма:
+          {{text}}
