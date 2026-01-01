@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import logging
 import re
-from html import unescape
 from dataclasses import dataclass
+from html import unescape
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 

@@ -53,17 +53,20 @@ def _upload_variants_to_notion(
 
     links: dict[str, str] = {}
     for key, text in variants:
-        page = send_markdown_to_notion(
-            notion_api_key=notion.api_key,
-            database_id=notion.database_id,
-            title=f"{base_title} — {key}",
-            markdown=text,
-            link=url,
-            title_property=notion.title_property,
-            link_property=notion.link_property,
-        )
-        if page.get("url"):
-            links[key] = page["url"]
+        try:
+            page = send_markdown_to_notion(
+                notion_api_key=notion.api_key,
+                database_id=notion.database_id,
+                title=f"{base_title} — {key}",
+                markdown=text,
+                link=url,
+                title_property=notion.title_property,
+                link_property=notion.link_property,
+            )
+            if page.get("url"):
+                links[key] = page["url"]
+        except Exception:
+            continue
     return links
 
 
