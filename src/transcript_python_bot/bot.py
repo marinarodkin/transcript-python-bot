@@ -241,6 +241,7 @@ async def _process_youtube_item(app: Application, item: dict) -> None:
         )
 
     channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
+    logger.info("send to channel_message", channel_id)
     if channel_id and (original_link or structure_link):
         channel_message = f"ЗАГОЛОВОК: {title}\nАВТОР: {author}\nССЫЛКА: {url}\n\n{original_link}\n\nСТРУКТУРА: {structure_link}\n"
         if translation_link:
@@ -392,3 +393,6 @@ def build_application() -> Application:
 def run_bot() -> None:
     application = build_application()
     application.run_polling()
+
+if __name__ == "__main__":
+    run_bot()
