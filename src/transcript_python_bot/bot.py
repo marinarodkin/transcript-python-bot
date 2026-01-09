@@ -14,6 +14,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 from .checkLink import is_valid_youtube_url, normalize_youtube_url
 from .config import RuntimeLimits, load_notion_config, load_openai_config, load_runtime_limits
+from .get_transcript import NoSupportedTranscriptFound
 from .pipeline import process_plain_text, process_youtube_url
 
 
@@ -21,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 
 QUEUE_KEY = "queue"
-PENDING_CHAT_IDS_KEY = "pending_chat_ids"
 QUEUE_WORKER_TASK_KEY = "queue_worker_task"
 SELF_PING_JOB_KEY = "self_ping_job"
 LIMITS_KEY = "LIMITS"
@@ -56,13 +56,6 @@ def _get_queue(app: Application) -> asyncio.Queue:
     if not isinstance(queue, asyncio.Queue):
         raise RuntimeError("Queue is not initialized in bot_data")
     return queue
-
-
-def _get_pending_chat_ids(app: Application) -> set[int]:
-    pending = app.bot_data.get(PENDING_CHAT_IDS_KEY)
-    if not isinstance(pending, set):
-        raise RuntimeError("pending_chat_ids is not initialized in bot_data")
-    return pending
 
 
 def _get_limits(app: Application) -> RuntimeLimits:
@@ -146,25 +139,17 @@ async def _enqueue_job(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     job: dict[str, Any],
-    busy_message: str,
     accepted_message: str,
 ) -> None:
     app = context.application
     queue = _get_queue(app)
-    pending_chat_ids = _get_pending_chat_ids(app)
 
     chat_id = update.effective_chat.id
-    if chat_id in pending_chat_ids:
-        if update.message:
-            await update.message.reply_text(busy_message)
-        return
-
     if queue.full():
         if update.message:
             await update.message.reply_text("Queue is full right now, please try again later.")
         return
 
-    pending_chat_ids.add(chat_id)
     position = queue.qsize()
     job["chat_id"] = chat_id
 
@@ -186,7 +171,6 @@ async def _enqueue_youtube(update: Update, context: ContextTypes.DEFAULT_TYPE, u
         update,
         context,
         job={"type": "youtube", "url": url},
-        busy_message="You already have a task in queue. Please wait.",
         accepted_message="link is in process",
     )
 
@@ -197,8 +181,7 @@ async def _enqueue_text(update: Update, context: ContextTypes.DEFAULT_TYPE, titl
         update,
         context,
         job={"type": "text", "title": title, "text": text},
-        busy_message="You already have a task in queue. Please wait.",
-        accepted_message="text is in process",
+        accepted_message="File received. Processing...",
     )
 
 
@@ -260,7 +243,6 @@ async def _on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     title = filename or "text from file"
-    await update.message.reply_text("File received. Processing...")
     await _enqueue_text(update, context, title=title, text=text)
 
 
@@ -283,6 +265,10 @@ async def _process_youtube_item(app: Application, item: dict[str, Any]) -> None:
             openai=openai_cfg,
             notion=notion_cfg,
         )
+    except NoSupportedTranscriptFound:
+        logger.info("no supported transcript found chat_id=%s url=%s", chat_id, url)
+        await app.bot.send_message(chat_id=chat_id, text="нет субтитров для данного языка")
+        return
     except Exception:
         logger.exception("failed process_youtube_url chat_id=%s url=%s", chat_id, url)
         await app.bot.send_message(chat_id=chat_id, text="something went wrong, Marina needs to watch logs")
@@ -301,32 +287,38 @@ async def _process_youtube_item(app: Application, item: dict[str, Any]) -> None:
         processed.handled.detected_language,
     )
 
-    await app.bot.send_message(
-        chat_id=chat_id,
-        text=f"video you provided '{title}' by '{author}' is now being processed",
-    )
+    try:
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text=f"video you provided '{title}' by '{author}' is now being processed",
+        )
+    except Exception:
+        logger.exception("failed to send processing message chat_id=%s", chat_id)
 
     structure_link = processed.notion_links.get("structured_markdown", "")
     original_link = processed.notion_links.get("original_transcript", "")
     translation_link = processed.notion_links.get("translation_ru", "")
 
-    if translation_link:
-        await app.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                f"Here is notion link: {original_link}\n"
-                f"Here is translation link: {translation_link}\n"
-                f"Here is structure link: {structure_link}\n"
-            ),
-        )
-    else:
-        await app.bot.send_message(
-            chat_id=chat_id,
-            text=(
-                f"Here is a link to text with structure : {structure_link}\n\n"
-                f"Here is original transcript: {original_link}"
-            ),
-        )
+    try:
+        if translation_link:
+            await app.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"Here is notion link: {original_link}\n"
+                    f"Here is translation link: {translation_link}\n"
+                    f"Here is structure link: {structure_link}\n"
+                ),
+            )
+        else:
+            await app.bot.send_message(
+                chat_id=chat_id,
+                text=(
+                    f"Here is a link to text with structure : {structure_link}\n\n"
+                    f"Here is original transcript: {original_link}"
+                ),
+            )
+    except Exception:
+        logger.exception("failed to send notion links message chat_id=%s", chat_id)
 
     channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
     if channel_id and (original_link or structure_link):
@@ -357,27 +349,36 @@ async def _process_youtube_item(app: Application, item: dict[str, Any]) -> None:
 
     base_filename = _sanitize_filename(title)
 
-    await _send_text_file(
-        app,
-        chat_id=chat_id,
-        filename=f"{base_filename}.txt",
-        content=processed.handled.readable_transcript,
-    )
-
-    await _send_text_file(
-        app,
-        chat_id=chat_id,
-        filename=f"{base_filename}-structure.txt",
-        content=processed.handled.structured_markdown,
-    )
-
-    if processed.handled.translation_ru:
+    try:
         await _send_text_file(
             app,
             chat_id=chat_id,
-            filename=f"trnsl-{base_filename}.txt",
-            content=processed.handled.translation_ru,
+            filename=f"{base_filename}.txt",
+            content=processed.handled.readable_transcript,
         )
+    except Exception:
+        logger.exception("failed to send readable transcript file chat_id=%s", chat_id)
+
+    try:
+        await _send_text_file(
+            app,
+            chat_id=chat_id,
+            filename=f"{base_filename}-structure.txt",
+            content=processed.handled.structured_markdown,
+        )
+    except Exception:
+        logger.exception("failed to send structured markdown file chat_id=%s", chat_id)
+
+    if processed.handled.translation_ru:
+        try:
+            await _send_text_file(
+                app,
+                chat_id=chat_id,
+                filename=f"trnsl-{base_filename}.txt",
+                content=processed.handled.translation_ru,
+            )
+        except Exception:
+            logger.exception("failed to send translation file chat_id=%s", chat_id)
 
     logger.info("queue done youtube chat_id=%s url=%s", chat_id, url)
 
@@ -405,53 +406,88 @@ async def _process_text_item(app: Application, item: dict[str, Any]) -> None:
         await app.bot.send_message(chat_id=chat_id, text="something went wrong, Marina needs to watch logs")
         return
 
-    await app.bot.send_message(chat_id=chat_id, text=f"Notion links: {processed.notion_links}")
+    try:
+        await app.bot.send_message(chat_id=chat_id, text=f"Notion links: {processed.notion_links}")
+    except Exception:
+        logger.exception("failed to send notion links message chat_id=%s", chat_id)
 
     base_filename = _sanitize_filename(title)
 
-    await _send_text_file(
-        app,
-        chat_id=chat_id,
-        filename=f"{base_filename}.txt",
-        content=processed.handled.readable_transcript,
-    )
+    try:
+        await _send_text_file(
+            app,
+            chat_id=chat_id,
+            filename=f"{base_filename}.txt",
+            content=processed.handled.readable_transcript,
+        )
+    except Exception:
+        logger.exception("failed to send readable transcript file chat_id=%s", chat_id)
 
-    await _send_text_file(
-        app,
-        chat_id=chat_id,
-        filename=f"{base_filename}-structure.txt",
-        content=processed.handled.structured_markdown,
-    )
+    try:
+        await _send_text_file(
+            app,
+            chat_id=chat_id,
+            filename=f"{base_filename}-structure.txt",
+            content=processed.handled.structured_markdown,
+        )
+    except Exception:
+        logger.exception("failed to send structured markdown file chat_id=%s", chat_id)
 
     logger.info("queue done text chat_id=%s title=%s", chat_id, title)
 
 
 async def _queue_worker(app: Application) -> None:
     queue = _get_queue(app)
-    pending_chat_ids = _get_pending_chat_ids(app)
 
     while True:
+        item = None
+        chat_id = 0
+        
         try:
             item = await queue.get()
         except (asyncio.CancelledError, GeneratorExit):
             logger.info("queue worker cancelled")
             return
+        except Exception:
+            logger.exception("unexpected error getting item from queue")
+            # Continue to next iteration instead of stopping
+            await asyncio.sleep(1)
+            continue
 
-        chat_id = int(item.get("chat_id", 0) or 0)
+        # Safely extract chat_id
+        try:
+            chat_id_raw = item.get("chat_id") if item else None
+            if chat_id_raw:
+                chat_id = int(chat_id_raw)
+        except (ValueError, TypeError):
+            logger.warning("invalid chat_id in queue item: %s", chat_id_raw)
+            chat_id = 0
 
         try:
-            job_type = item.get("type")
+            job_type = item.get("type") if item else None
             if job_type == "youtube":
                 await _process_youtube_item(app, item)
             elif job_type == "text":
                 await _process_text_item(app, item)
             else:
                 if chat_id:
-                    await app.bot.send_message(chat_id=chat_id, text="Unknown job type")
-        finally:
+                    try:
+                        await app.bot.send_message(chat_id=chat_id, text="Unknown job type")
+                    except Exception:
+                        logger.exception("failed to send 'Unknown job type' message chat_id=%s", chat_id)
+        except Exception:
+            logger.exception("unexpected error processing queue item chat_id=%s type=%s", chat_id, item.get("type") if item else "unknown")
             if chat_id:
-                pending_chat_ids.discard(chat_id)
-            queue.task_done()
+                try:
+                    await app.bot.send_message(chat_id=chat_id, text="something went wrong, Marina needs to watch logs")
+                except Exception:
+                    logger.exception("failed to send error message chat_id=%s", chat_id)
+        finally:
+            # Always clean up and mark task as done
+            try:
+                queue.task_done()
+            except Exception:
+                logger.exception("failed to call queue.task_done()")
 
 
 def _ensure_queue_worker(app: Application) -> None:
@@ -505,7 +541,6 @@ def build_application() -> Application:
         QUEUE_KEY: asyncio.Queue(maxsize=limits.queue_maxsize),
         QUEUE_WORKER_TASK_KEY: None,
         SELF_PING_JOB_KEY: None,
-        PENDING_CHAT_IDS_KEY: set(),
     }
 
     application.add_handler(CommandHandler("start", _start))

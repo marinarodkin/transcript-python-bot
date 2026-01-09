@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -7,6 +8,9 @@ from pathlib import Path
 import yaml
 from langdetect import detect
 from openai import OpenAI
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -172,6 +176,7 @@ def handle_transcript(
     prompt_path: Path,
     chunk_size: int = 30_000,
 ) -> HandlerResult:
+    logger.info("starting transcript processing chars=%s chunk_size=%s", len(transcript or ""), chunk_size)
     prompts = load_prompts(prompt_path)
     client = OpenAI(api_key=api_key)
 
@@ -181,9 +186,12 @@ def handle_transcript(
     if not chunks:
         raise ValueError("Transcript is empty")
 
+    logger.info("transcript split into chunks count=%s", len(chunks))
+
     readable_parts: list[str] = []
     current_tail = ""
-    for chunk in chunks:
+    for idx, chunk in enumerate(chunks, start=1):
+        logger.info("processing chunk %s of %s chars=%s", idx, len(chunks), len(chunk))
         tail_result = improve_readability(current_tail + chunk, client=client, model=model, prompts=prompts)
         readable_parts.append(tail_result.complete_text)
         current_tail = tail_result.tail
@@ -194,13 +202,17 @@ def handle_transcript(
         raise ValueError("Readable transcript is empty")
 
     detected_language = detect_language_name(readable_transcript)
+    logger.info("readability done detected_language=%s", detected_language)
     translation_ru: str | None = None
     if detected_language != "Russian":
+        logger.info("starting ru translation")
         translation_ru = translate_to_russian(readable_transcript, client=client, model=model, prompts=prompts)
 
+    logger.info("starting markdown structuring")
     structured_markdown = structure_markdown(readable_transcript, client=client, model=model, prompts=prompts)
     structured_translation_markdown: str | None = None
     if translation_ru:
+        logger.info("starting markdown structuring for ru translation")
         structured_translation_markdown = structure_markdown(
             translation_ru, client=client, model=model, prompts=prompts
         )

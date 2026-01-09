@@ -7,6 +7,7 @@ from functools import lru_cache
 from typing import Iterable
 
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._errors import NoTranscriptFound
 from youtube_transcript_api.proxies import WebshareProxyConfig
 
 import requests
@@ -21,6 +22,15 @@ print("[get_transcript] module imported")
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
+
+class NoSupportedTranscriptFound(RuntimeError):
+    def __init__(self, *, video_id: str, tried_languages: list[str]):
+        super().__init__(
+            f"No transcript found for video_id={video_id} in languages={tried_languages}"
+        )
+        self.video_id = video_id
+        self.tried_languages = tried_languages
+
 
 @dataclass(frozen=True)
 class TranscriptResult:
@@ -99,7 +109,8 @@ def fetch_transcript(
     print("[get_transcript] raw url:", url)
 
     video_id = extract_video_id(url)
-    preferred_languages = languages or ["ru", "en"]
+    supported_fallback_languages = ["ru", "en", "de"]
+    preferred_languages = languages or ["ru"]
 
     print("[get_transcript] video_id:", video_id)
     print("[get_transcript] preferred languages:", preferred_languages)
@@ -108,8 +119,17 @@ def fetch_transcript(
     print("[get_transcript] transcript_list received")
 
     print("[get_transcript] start find_transcript")
-    transcript = transcript_list.find_transcript(preferred_languages)
-    print("[get_transcript] transcript selected:", transcript.language_code)
+    transcript = None
+    for language_code in supported_fallback_languages:
+        try:
+            transcript = transcript_list.find_transcript([language_code])
+            print("[get_transcript] transcript selected:", transcript.language_code)
+            break
+        except NoTranscriptFound:
+            continue
+
+    if transcript is None:
+        raise NoSupportedTranscriptFound(video_id=video_id, tried_languages=supported_fallback_languages)
 
     last_error: Exception | None = None
 
