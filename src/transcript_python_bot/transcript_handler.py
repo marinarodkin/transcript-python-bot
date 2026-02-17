@@ -8,9 +8,18 @@ from pathlib import Path
 import yaml
 from langdetect import detect
 from openai import OpenAI
+from openai import APIError, RateLimitError
 
 
 logger = logging.getLogger(__name__)
+
+
+class OpenAIRateLimitError(RuntimeError):
+    pass
+
+
+class OpenAIQuotaError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -121,14 +130,29 @@ def _chat(
     user: str,
     temperature: float,
 ) -> str:
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        temperature=temperature,
-    )
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=temperature,
+        )
+    except RateLimitError as exc:
+        body = getattr(exc, "body", None)
+        error_code = getattr(exc, "code", None)
+        if isinstance(body, dict):
+            error = body.get("error")
+            if isinstance(error, dict):
+                error_code = error.get("code") or error_code
+        if error_code == "insufficient_quota":
+            raise OpenAIQuotaError("OpenAI quota exceeded") from exc
+        raise OpenAIRateLimitError("OpenAI rate limit exceeded") from exc
+    except APIError as exc:
+        logger.exception("OpenAI API error status=%s", getattr(exc, "status_code", None))
+        raise
+
     return (response.choices[0].message.content or "").strip()
 
 
@@ -208,14 +232,10 @@ def handle_transcript(
         logger.info("starting ru translation")
         translation_ru = translate_to_russian(readable_transcript, client=client, model=model, prompts=prompts)
 
-    logger.info("starting markdown structuring")
-    structured_markdown = structure_markdown(readable_transcript, client=client, model=model, prompts=prompts)
+    text_for_structuring = translation_ru if translation_ru else readable_transcript
+    logger.info("starting markdown structuring for language=%s", "Russian")
+    structured_markdown = structure_markdown(text_for_structuring, client=client, model=model, prompts=prompts)
     structured_translation_markdown: str | None = None
-    if translation_ru:
-        logger.info("starting markdown structuring for ru translation")
-        structured_translation_markdown = structure_markdown(
-            translation_ru, client=client, model=model, prompts=prompts
-        )
 
     return HandlerResult(
         original_transcript=original_transcript,

@@ -6,6 +6,7 @@ import logging
 import os
 import re
 from contextlib import suppress
+from html import escape as html_escape
 from typing import Any
 
 from dotenv import load_dotenv
@@ -16,6 +17,7 @@ from .checkLink import is_valid_youtube_url, normalize_youtube_url
 from .config import RuntimeLimits, load_notion_config, load_openai_config, load_runtime_limits
 from .get_transcript import NoSupportedTranscriptFound
 from .pipeline import process_plain_text, process_youtube_url
+from .transcript_handler import OpenAIQuotaError, OpenAIRateLimitError
 
 
 logger = logging.getLogger(__name__)
@@ -45,8 +47,32 @@ def _sanitize_filename(name: str, limit: int = 50) -> str:
     return safe
 
 
-async def _send_text_file(app: Application, *, chat_id: int, filename: str, content: str) -> None:
-    data = io.BytesIO(content.encode("utf-8"))
+def _build_html_document(title: str, content: str) -> str:
+    safe_title = html_escape(title or "Transcript")
+    safe_content = html_escape(content or "")
+    return (
+        "<!doctype html>\n"
+        "<html lang=\"en\">\n"
+        "<head>\n"
+        "  <meta charset=\"utf-8\">\n"
+        f"  <title>{safe_title}</title>\n"
+        "  <style>\n"
+        "    body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; margin: 24px; }\n"
+        "    h1 { font-size: 20px; margin-bottom: 16px; }\n"
+        "    pre { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }\n"
+        "  </style>\n"
+        "</head>\n"
+        "<body>\n"
+        f"  <h1>{safe_title}</h1>\n"
+        f"  <pre>{safe_content}</pre>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+
+
+async def _send_html_file(app: Application, *, chat_id: int, filename: str, content: str, title: str) -> None:
+    html_doc = _build_html_document(title, content)
+    data = io.BytesIO(html_doc.encode("utf-8"))
     data.name = filename
     await app.bot.send_document(chat_id=chat_id, document=InputFile(data, filename=filename))
 
@@ -269,6 +295,20 @@ async def _process_youtube_item(app: Application, item: dict[str, Any]) -> None:
         logger.info("no supported transcript found chat_id=%s url=%s", chat_id, url)
         await app.bot.send_message(chat_id=chat_id, text="нет субтитров для данного языка")
         return
+    except OpenAIQuotaError:
+        logger.exception("openai quota exceeded chat_id=%s url=%s", chat_id, url)
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text="OpenAI quota exceeded. Please check billing and try again later.",
+        )
+        return
+    except OpenAIRateLimitError:
+        logger.exception("openai rate limited chat_id=%s url=%s", chat_id, url)
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text="OpenAI rate limit reached. Please try again in a few minutes.",
+        )
+        return
     except Exception:
         logger.exception("failed process_youtube_url chat_id=%s url=%s", chat_id, url)
         await app.bot.send_message(chat_id=chat_id, text="something went wrong, Marina needs to watch logs")
@@ -350,32 +390,35 @@ async def _process_youtube_item(app: Application, item: dict[str, Any]) -> None:
     base_filename = _sanitize_filename(title)
 
     try:
-        await _send_text_file(
+        await _send_html_file(
             app,
             chat_id=chat_id,
-            filename=f"{base_filename}.txt",
+            filename=f"{base_filename}.html",
             content=processed.handled.readable_transcript,
+            title=title,
         )
     except Exception:
         logger.exception("failed to send readable transcript file chat_id=%s", chat_id)
 
     try:
-        await _send_text_file(
+        await _send_html_file(
             app,
             chat_id=chat_id,
-            filename=f"{base_filename}-structure.txt",
+            filename=f"{base_filename}-structure.html",
             content=processed.handled.structured_markdown,
+            title=f"{title} (Structured)",
         )
     except Exception:
         logger.exception("failed to send structured markdown file chat_id=%s", chat_id)
 
     if processed.handled.translation_ru:
         try:
-            await _send_text_file(
+            await _send_html_file(
                 app,
                 chat_id=chat_id,
-                filename=f"trnsl-{base_filename}.txt",
+                filename=f"trnsl-{base_filename}.html",
                 content=processed.handled.translation_ru,
+                title=f"{title} (Translation)",
             )
         except Exception:
             logger.exception("failed to send translation file chat_id=%s", chat_id)
@@ -401,6 +444,20 @@ async def _process_text_item(app: Application, item: dict[str, Any]) -> None:
             openai=openai_cfg,
             notion=notion_cfg,
         )
+    except OpenAIQuotaError:
+        logger.exception("openai quota exceeded chat_id=%s title=%s", chat_id, title)
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text="OpenAI quota exceeded. Please check billing and try again later.",
+        )
+        return
+    except OpenAIRateLimitError:
+        logger.exception("openai rate limited chat_id=%s title=%s", chat_id, title)
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text="OpenAI rate limit reached. Please try again in a few minutes.",
+        )
+        return
     except Exception:
         logger.exception("failed process_plain_text chat_id=%s title=%s", chat_id, title)
         await app.bot.send_message(chat_id=chat_id, text="something went wrong, Marina needs to watch logs")
@@ -414,21 +471,23 @@ async def _process_text_item(app: Application, item: dict[str, Any]) -> None:
     base_filename = _sanitize_filename(title)
 
     try:
-        await _send_text_file(
+        await _send_html_file(
             app,
             chat_id=chat_id,
-            filename=f"{base_filename}.txt",
+            filename=f"{base_filename}.html",
             content=processed.handled.readable_transcript,
+            title=title,
         )
     except Exception:
         logger.exception("failed to send readable transcript file chat_id=%s", chat_id)
 
     try:
-        await _send_text_file(
+        await _send_html_file(
             app,
             chat_id=chat_id,
-            filename=f"{base_filename}-structure.txt",
+            filename=f"{base_filename}-structure.html",
             content=processed.handled.structured_markdown,
+            title=f"{title} (Structured)",
         )
     except Exception:
         logger.exception("failed to send structured markdown file chat_id=%s", chat_id)
