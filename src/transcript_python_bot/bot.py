@@ -63,7 +63,7 @@ def _build_html_document(title: str, content: str, *, render_markdown: bool) -> 
         f"  <title>{safe_title}</title>\n"
         "  <style>\n"
         "    :root { color-scheme: light; }\n"
-        "    body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; margin: 24px; color: #111; }\n"
+        "    body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; margin: 24px; color: #111; font-size: 16px; }\n"
         "    h1 { font-size: 22px; margin: 0 0 16px; }\n"
         "    h2 { font-size: 18px; margin: 20px 0 10px; }\n"
         "    h3 { font-size: 16px; margin: 18px 0 8px; }\n"
@@ -73,7 +73,7 @@ def _build_html_document(title: str, content: str, *, render_markdown: bool) -> 
         "    ul, ol { margin: 10px 0 10px 22px; }\n"
         "    li { margin: 6px 0; }\n"
         "    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #f2f2f2; padding: 0 4px; border-radius: 4px; }\n"
-        "    pre { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #f6f6f6; padding: 12px; border-radius: 6px; }\n"
+        "    pre { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 16px; background: #f6f6f6; padding: 12px; border-radius: 6px; }\n"
         "    blockquote { border-left: 3px solid #ddd; padding-left: 12px; color: #444; margin: 12px 0; }\n"
         "  </style>\n"
         "</head>\n"
@@ -436,6 +436,19 @@ async def _process_youtube_item(app: Application, item: dict[str, Any]) -> None:
     except Exception:
         logger.exception("failed to send structured markdown file chat_id=%s", chat_id)
 
+    if channel_id and processed.handled.structured_markdown:
+        try:
+            await _send_html_file(
+                app,
+                chat_id=channel_id,
+                filename=f"{base_filename}-structure.html",
+                content=processed.handled.structured_markdown,
+                title=f"{title} (Structured)",
+                render_markdown=True,
+            )
+        except Exception:
+            logger.exception("failed to send structured markdown file to channel_id=%s", channel_id)
+
     if processed.handled.translation_ru:
         try:
             await _send_html_file(
@@ -495,6 +508,7 @@ async def _process_text_item(app: Application, item: dict[str, Any]) -> None:
         logger.exception("failed to send notion links message chat_id=%s", chat_id)
 
     base_filename = _sanitize_filename(title)
+    channel_id = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
 
     try:
         await _send_html_file(
@@ -519,6 +533,19 @@ async def _process_text_item(app: Application, item: dict[str, Any]) -> None:
         )
     except Exception:
         logger.exception("failed to send structured markdown file chat_id=%s", chat_id)
+
+    if channel_id and processed.handled.structured_markdown:
+        try:
+            await _send_html_file(
+                app,
+                chat_id=channel_id,
+                filename=f"{base_filename}-structure.html",
+                content=processed.handled.structured_markdown,
+                title=f"{title} (Structured)",
+                render_markdown=True,
+            )
+        except Exception:
+            logger.exception("failed to send structured markdown file to channel_id=%s", channel_id)
 
     logger.info("queue done text chat_id=%s title=%s", chat_id, title)
 
