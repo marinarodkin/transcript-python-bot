@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 from telegram import InputFile, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
+import markdown as md
+
 from .checkLink import is_valid_youtube_url, normalize_youtube_url
 from .config import RuntimeLimits, load_notion_config, load_openai_config, load_runtime_limits
 from .get_transcript import NoSupportedTranscriptFound
@@ -47,9 +49,12 @@ def _sanitize_filename(name: str, limit: int = 50) -> str:
     return safe
 
 
-def _build_html_document(title: str, content: str) -> str:
+def _build_html_document(title: str, content: str, *, render_markdown: bool) -> str:
     safe_title = html_escape(title or "Transcript")
-    safe_content = html_escape(content or "")
+    if render_markdown:
+        body_html = md.markdown(content or "", extensions=["extra", "sane_lists"])
+    else:
+        body_html = f"<pre>{html_escape(content or '')}</pre>"
     return (
         "<!doctype html>\n"
         "<html lang=\"en\">\n"
@@ -57,21 +62,39 @@ def _build_html_document(title: str, content: str) -> str:
         "  <meta charset=\"utf-8\">\n"
         f"  <title>{safe_title}</title>\n"
         "  <style>\n"
-        "    body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; margin: 24px; }\n"
-        "    h1 { font-size: 20px; margin-bottom: 16px; }\n"
-        "    pre { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }\n"
+        "    :root { color-scheme: light; }\n"
+        "    body { font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif; margin: 24px; color: #111; }\n"
+        "    h1 { font-size: 22px; margin: 0 0 16px; }\n"
+        "    h2 { font-size: 18px; margin: 20px 0 10px; }\n"
+        "    h3 { font-size: 16px; margin: 18px 0 8px; }\n"
+        "    strong { font-weight: 700; }\n"
+        "    em { font-style: italic; }\n"
+        "    p { line-height: 1.55; margin: 10px 0; }\n"
+        "    ul, ol { margin: 10px 0 10px 22px; }\n"
+        "    li { margin: 6px 0; }\n"
+        "    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #f2f2f2; padding: 0 4px; border-radius: 4px; }\n"
+        "    pre { white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #f6f6f6; padding: 12px; border-radius: 6px; }\n"
+        "    blockquote { border-left: 3px solid #ddd; padding-left: 12px; color: #444; margin: 12px 0; }\n"
         "  </style>\n"
         "</head>\n"
         "<body>\n"
         f"  <h1>{safe_title}</h1>\n"
-        f"  <pre>{safe_content}</pre>\n"
+        f"  <div class=\"content\">{body_html}</div>\n"
         "</body>\n"
         "</html>\n"
     )
 
 
-async def _send_html_file(app: Application, *, chat_id: int, filename: str, content: str, title: str) -> None:
-    html_doc = _build_html_document(title, content)
+async def _send_html_file(
+    app: Application,
+    *,
+    chat_id: int,
+    filename: str,
+    content: str,
+    title: str,
+    render_markdown: bool,
+) -> None:
+    html_doc = _build_html_document(title, content, render_markdown=render_markdown)
     data = io.BytesIO(html_doc.encode("utf-8"))
     data.name = filename
     await app.bot.send_document(chat_id=chat_id, document=InputFile(data, filename=filename))
@@ -396,6 +419,7 @@ async def _process_youtube_item(app: Application, item: dict[str, Any]) -> None:
             filename=f"{base_filename}.html",
             content=processed.handled.readable_transcript,
             title=title,
+            render_markdown=False,
         )
     except Exception:
         logger.exception("failed to send readable transcript file chat_id=%s", chat_id)
@@ -407,6 +431,7 @@ async def _process_youtube_item(app: Application, item: dict[str, Any]) -> None:
             filename=f"{base_filename}-structure.html",
             content=processed.handled.structured_markdown,
             title=f"{title} (Structured)",
+            render_markdown=True,
         )
     except Exception:
         logger.exception("failed to send structured markdown file chat_id=%s", chat_id)
@@ -419,6 +444,7 @@ async def _process_youtube_item(app: Application, item: dict[str, Any]) -> None:
                 filename=f"trnsl-{base_filename}.html",
                 content=processed.handled.translation_ru,
                 title=f"{title} (Translation)",
+                render_markdown=True,
             )
         except Exception:
             logger.exception("failed to send translation file chat_id=%s", chat_id)
@@ -477,6 +503,7 @@ async def _process_text_item(app: Application, item: dict[str, Any]) -> None:
             filename=f"{base_filename}.html",
             content=processed.handled.readable_transcript,
             title=title,
+            render_markdown=False,
         )
     except Exception:
         logger.exception("failed to send readable transcript file chat_id=%s", chat_id)
@@ -488,6 +515,7 @@ async def _process_text_item(app: Application, item: dict[str, Any]) -> None:
             filename=f"{base_filename}-structure.html",
             content=processed.handled.structured_markdown,
             title=f"{title} (Structured)",
+            render_markdown=True,
         )
     except Exception:
         logger.exception("failed to send structured markdown file chat_id=%s", chat_id)
