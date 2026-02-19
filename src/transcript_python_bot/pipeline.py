@@ -13,6 +13,7 @@ from .video_info import VideoInfo, fetch_video_info
 class OpenAIConfig:
     api_key: str
     model: str
+    audio_model: str
     prompt_path: Path
     chunk_size: int
 

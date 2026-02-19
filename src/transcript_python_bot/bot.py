@@ -5,8 +5,10 @@ import io
 import logging
 import os
 import re
+import tempfile
 from contextlib import suppress
 from html import escape as html_escape
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -18,6 +20,8 @@ import markdown as md
 from .checkLink import is_valid_youtube_url, normalize_youtube_url
 from .config import RuntimeLimits, load_notion_config, load_openai_config, load_runtime_limits
 from .get_transcript import NoSupportedTranscriptFound
+from .audio_transcribe import transcribe_audio_file
+from .media_processing import guess_media_type, sanitize_media_filename
 from .pipeline import process_plain_text, process_youtube_url
 from .transcript_handler import OpenAIQuotaError, OpenAIRateLimitError
 
@@ -134,9 +138,19 @@ def _get_transcript_languages(app: Application) -> list[str] | None:
     return langs
 
 
+def _get_audio_price_cents_per_min() -> float:
+    raw = (os.getenv("AUDIO_PRICE_CENTS_PER_MIN") or "").strip()
+    if not raw:
+        return 0.6
+    try:
+        return float(raw)
+    except ValueError:
+        return 0.6
+
+
 async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.message:
-        await update.message.reply_text("Send me a YouTube link or a .txt file")
+        await update.message.reply_text("Send me a YouTube link, a .txt file, or an audio file")
 
 
 async def _schedule_self_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -234,6 +248,41 @@ async def _enqueue_text(update: Update, context: ContextTypes.DEFAULT_TYPE, titl
     )
 
 
+async def _enqueue_media(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    file_id: str,
+    filename: str,
+    mime_type: str | None,
+    file_size: int | None,
+    media_type: str,
+    duration_sec: int | None,
+) -> None:
+    logger.info(
+        "enqueue media chat_id=%s name=%s mime=%s size=%s type=%s",
+        update.effective_chat.id,
+        filename,
+        mime_type,
+        file_size,
+        media_type,
+    )
+    await _enqueue_job(
+        update,
+        context,
+        job={
+            "type": "media",
+            "file_id": file_id,
+            "filename": filename,
+            "mime_type": mime_type,
+            "file_size": file_size,
+            "media_type": media_type,
+            "duration_sec": duration_sec,
+        },
+        accepted_message="Media received. Processing...",
+    )
+
+
 async def _on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.message:
         return
@@ -242,7 +291,7 @@ async def _on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.info("telegram text received chat_id=%s length=%s", update.effective_chat.id, len(text))
 
     if not text:
-        await update.message.reply_text("Send me a YouTube link or a .txt file")
+        await update.message.reply_text("Send me a YouTube link, a .txt file, or an audio file")
         return
 
     if text == "self-ping":
@@ -271,16 +320,35 @@ async def _on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     limits = _get_limits(context.application)
 
-    if doc.file_size and doc.file_size > limits.max_text_file_bytes:
-        await update.message.reply_text("File is too large. Please send a smaller .txt file.")
-        return
-
     filename = (doc.file_name or "").strip()
     is_txt_by_name = filename.lower().endswith(".txt")
     is_txt_by_mime = (doc.mime_type or "").lower() in {"text/plain", "text/markdown"}
 
     if not (is_txt_by_name or is_txt_by_mime):
-        await update.message.reply_text("Please send a .txt file (plain text).")
+        media_type = guess_media_type(filename, doc.mime_type)
+        if not media_type:
+            await update.message.reply_text("Please send a .txt file or an audio file.")
+            return
+        if media_type == "video":
+            await update.message.reply_text("Video is not supported. Please send audio only.")
+            return
+        if doc.file_size and doc.file_size > limits.max_media_file_bytes:
+            await update.message.reply_text("Media file is too large. Please send a smaller file.")
+            return
+        await _enqueue_media(
+            update,
+            context,
+            file_id=doc.file_id,
+            filename=filename or f"{media_type}_file",
+            mime_type=doc.mime_type,
+            file_size=doc.file_size,
+            media_type=media_type,
+            duration_sec=None,
+        )
+        return
+
+    if doc.file_size and doc.file_size > limits.max_text_file_bytes:
+        await update.message.reply_text("File is too large. Please send a smaller .txt file.")
         return
 
     file = await doc.get_file()
@@ -293,6 +361,38 @@ async def _on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     title = filename or "text from file"
     await _enqueue_text(update, context, title=title, text=text)
+
+
+async def _on_media(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.message:
+        return
+
+    message = update.message
+    media = message.audio or message.voice
+    if not media:
+        return
+
+    limits = _get_limits(context.application)
+    file_size = getattr(media, "file_size", None)
+    if file_size and file_size > limits.max_media_file_bytes:
+        await message.reply_text("Media file is too large. Please send a smaller file.")
+        return
+
+    mime_type = getattr(media, "mime_type", None)
+    filename = getattr(media, "file_name", None) or "media"
+    media_type = "audio"
+    duration_sec = getattr(media, "duration", None)
+
+    await _enqueue_media(
+        update,
+        context,
+        file_id=media.file_id,
+        filename=filename,
+        mime_type=mime_type,
+        file_size=file_size,
+        media_type=media_type,
+        duration_sec=duration_sec,
+    )
 
 
 async def _process_youtube_item(app: Application, item: dict[str, Any]) -> None:
@@ -465,43 +565,7 @@ async def _process_youtube_item(app: Application, item: dict[str, Any]) -> None:
     logger.info("queue done youtube chat_id=%s url=%s", chat_id, url)
 
 
-async def _process_text_item(app: Application, item: dict[str, Any]) -> None:
-    chat_id = int(item["chat_id"])
-    title = str(item.get("title") or "text from file")
-    text = str(item.get("text") or "")
-
-    logger.info("queue start text chat_id=%s title=%s length=%s", chat_id, title, len(text))
-
-    try:
-        openai_cfg = _get_openai_cfg(app)
-        notion_cfg = _get_notion_cfg(app)
-
-        processed = await asyncio.to_thread(
-            process_plain_text,
-            title=title,
-            text=text,
-            openai=openai_cfg,
-            notion=notion_cfg,
-        )
-    except OpenAIQuotaError:
-        logger.exception("openai quota exceeded chat_id=%s title=%s", chat_id, title)
-        await app.bot.send_message(
-            chat_id=chat_id,
-            text="OpenAI quota exceeded. Please check billing and try again later.",
-        )
-        return
-    except OpenAIRateLimitError:
-        logger.exception("openai rate limited chat_id=%s title=%s", chat_id, title)
-        await app.bot.send_message(
-            chat_id=chat_id,
-            text="OpenAI rate limit reached. Please try again in a few minutes.",
-        )
-        return
-    except Exception:
-        logger.exception("failed process_plain_text chat_id=%s title=%s", chat_id, title)
-        await app.bot.send_message(chat_id=chat_id, text="something went wrong, Marina needs to watch logs")
-        return
-
+async def _send_processed_text_outputs(app: Application, *, chat_id: int, title: str, processed: Any) -> None:
     try:
         await app.bot.send_message(chat_id=chat_id, text=f"Notion links: {processed.notion_links}")
     except Exception:
@@ -547,7 +611,149 @@ async def _process_text_item(app: Application, item: dict[str, Any]) -> None:
         except Exception:
             logger.exception("failed to send structured markdown file to channel_id=%s", channel_id)
 
+    if processed.handled.translation_ru:
+        try:
+            await _send_html_file(
+                app,
+                chat_id=chat_id,
+                filename=f"trnsl-{base_filename}.html",
+                content=processed.handled.translation_ru,
+                title=f"{title} (Translation)",
+                render_markdown=True,
+            )
+        except Exception:
+            logger.exception("failed to send translation file chat_id=%s", chat_id)
+
+
+async def _process_text_item(app: Application, item: dict[str, Any]) -> None:
+    chat_id = int(item["chat_id"])
+    title = str(item.get("title") or "text from file")
+    text = str(item.get("text") or "")
+
+    logger.info("queue start text chat_id=%s title=%s length=%s", chat_id, title, len(text))
+
+    try:
+        openai_cfg = _get_openai_cfg(app)
+        notion_cfg = _get_notion_cfg(app)
+
+        processed = await asyncio.to_thread(
+            process_plain_text,
+            title=title,
+            text=text,
+            openai=openai_cfg,
+            notion=notion_cfg,
+        )
+    except OpenAIQuotaError:
+        logger.exception("openai quota exceeded chat_id=%s title=%s", chat_id, title)
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text="OpenAI quota exceeded. Please check billing and try again later.",
+        )
+        return
+    except OpenAIRateLimitError:
+        logger.exception("openai rate limited chat_id=%s title=%s", chat_id, title)
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text="OpenAI rate limit reached. Please try again in a few minutes.",
+        )
+        return
+    except Exception:
+        logger.exception("failed process_plain_text chat_id=%s title=%s", chat_id, title)
+        await app.bot.send_message(chat_id=chat_id, text="something went wrong, Marina needs to watch logs")
+        return
+    await _send_processed_text_outputs(app, chat_id=chat_id, title=title, processed=processed)
     logger.info("queue done text chat_id=%s title=%s", chat_id, title)
+
+
+async def _process_media_item(app: Application, item: dict[str, Any]) -> None:
+    chat_id = int(item["chat_id"])
+    file_id = str(item.get("file_id") or "")
+    filename = str(item.get("filename") or "media")
+    mime_type = item.get("mime_type")
+    duration_sec = item.get("duration_sec")
+
+    logger.info(
+        "queue start media chat_id=%s name=%s mime=%s type=%s",
+        chat_id,
+        filename,
+        mime_type,
+        item.get("media_type"),
+    )
+
+    if not file_id:
+        await app.bot.send_message(chat_id=chat_id, text="Media file is missing file_id.")
+        return
+
+    limits = _get_limits(app)
+    openai_cfg = _get_openai_cfg(app)
+    notion_cfg = _get_notion_cfg(app)
+    price_cents_per_min = _get_audio_price_cents_per_min()
+
+    if isinstance(duration_sec, (int, float)) and duration_sec > 0:
+        cost_cents = (float(duration_sec) / 60.0) * price_cents_per_min
+        try:
+            await app.bot.send_message(
+                chat_id=chat_id,
+                text=f"Estimated audio cost: {cost_cents:.2f} cents",
+            )
+        except Exception:
+            logger.exception("failed to send cost estimate chat_id=%s", chat_id)
+
+    safe_name = sanitize_media_filename(filename)
+    try:
+        with tempfile.TemporaryDirectory() as tempdir:
+            temp_path = Path(tempdir)
+            input_path = temp_path / safe_name
+
+            tg_file = await app.bot.get_file(file_id)
+            await tg_file.download_to_drive(custom_path=str(input_path))
+
+            if input_path.stat().st_size > limits.max_audio_bytes:
+                await app.bot.send_message(
+                    chat_id=chat_id,
+                    text="Audio file is too large. Please send a smaller file.",
+                )
+                return
+
+            transcript = await asyncio.to_thread(
+                transcribe_audio_file,
+                input_path,
+                api_key=openai_cfg.api_key,
+                model=openai_cfg.audio_model,
+            )
+
+            if not transcript:
+                await app.bot.send_message(chat_id=chat_id, text="Failed to transcribe audio.")
+                return
+
+            processed = await asyncio.to_thread(
+                process_plain_text,
+                title=filename,
+                text=transcript,
+                openai=openai_cfg,
+                notion=notion_cfg,
+            )
+    except OpenAIQuotaError:
+        logger.exception("openai quota exceeded chat_id=%s filename=%s", chat_id, filename)
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text="OpenAI quota exceeded. Please check billing and try again later.",
+        )
+        return
+    except OpenAIRateLimitError:
+        logger.exception("openai rate limited chat_id=%s filename=%s", chat_id, filename)
+        await app.bot.send_message(
+            chat_id=chat_id,
+            text="OpenAI rate limit reached. Please try again in a few minutes.",
+        )
+        return
+    except Exception:
+        logger.exception("failed to process media chat_id=%s filename=%s", chat_id, filename)
+        await app.bot.send_message(chat_id=chat_id, text="something went wrong, Marina needs to watch logs")
+        return
+
+    await _send_processed_text_outputs(app, chat_id=chat_id, title=filename, processed=processed)
+    logger.info("queue done media chat_id=%s filename=%s", chat_id, filename)
 
 
 async def _queue_worker(app: Application) -> None:
@@ -583,6 +789,8 @@ async def _queue_worker(app: Application) -> None:
                 await _process_youtube_item(app, item)
             elif job_type == "text":
                 await _process_text_item(app, item)
+            elif job_type == "media":
+                await _process_media_item(app, item)
             else:
                 if chat_id:
                     try:
@@ -658,6 +866,7 @@ def build_application() -> Application:
     }
 
     application.add_handler(CommandHandler("start", _start))
+    application.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, _on_media))
     application.add_handler(MessageHandler(filters.Document.ALL, _on_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _on_text))
 

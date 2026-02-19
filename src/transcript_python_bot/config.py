@@ -12,6 +12,9 @@ class RuntimeLimits:
     queue_maxsize: int
     max_text_file_bytes: int
     max_text_chars: int
+    max_media_file_bytes: int
+    max_media_duration_sec: int
+    max_audio_bytes: int
 
 
 def _env_int(name: str, default: int) -> int:
@@ -29,9 +32,16 @@ def load_openai_config() -> OpenAIConfig:
     if not api_key:
         raise RuntimeError("Missing OPENAI_API_KEY in environment")
     model = (os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip() or "gpt-4o-mini"
+    audio_model = (os.getenv("OPENAI_AUDIO_MODEL") or "whisper-1").strip() or "whisper-1"
     prompt_path = Path((os.getenv("PROMPT_PATH") or "prompts/transcript_prompts.yaml").strip())
     chunk_size = _env_int("CHUNK_SIZE", 30_000)
-    return OpenAIConfig(api_key=api_key, model=model, prompt_path=prompt_path, chunk_size=chunk_size)
+    return OpenAIConfig(
+        api_key=api_key,
+        model=model,
+        audio_model=audio_model,
+        prompt_path=prompt_path,
+        chunk_size=chunk_size,
+    )
 
 
 def load_notion_config() -> NotionConfig | None:
@@ -54,5 +64,7 @@ def load_runtime_limits() -> RuntimeLimits:
         queue_maxsize=_env_int("QUEUE_MAXSIZE", 20),
         max_text_file_bytes=_env_int("MAX_TEXT_FILE_BYTES", 1_000_000),
         max_text_chars=_env_int("MAX_TEXT_CHARS", 1_000_000),
+        max_media_file_bytes=_env_int("MAX_MEDIA_FILE_BYTES", 50_000_000),
+        max_media_duration_sec=_env_int("MAX_MEDIA_DURATION_SEC", 3600),
+        max_audio_bytes=_env_int("MAX_AUDIO_BYTES", 24_000_000),
     )
-
