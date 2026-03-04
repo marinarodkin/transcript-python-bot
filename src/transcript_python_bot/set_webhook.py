@@ -64,6 +64,37 @@ def _load_env_from_pythonanywhere_wsgi() -> None:
             return
 
 
+def _infer_pythonanywhere_base_url() -> str | None:
+    if (os.getenv("TELEGRAM_WEBHOOK_BASE_URL") or "").strip():
+        return None
+    if (os.getenv("TELEGRAM_WEBHOOK_URL") or "").strip():
+        return None
+
+    candidates = _find_pythonanywhere_wsgi_files()
+    if not candidates:
+        return None
+
+    best: Path | None = None
+    for path in candidates:
+        name = path.name
+        if "pythonanywhere" in name:
+            best = path
+            break
+    if best is None:
+        best = candidates[0]
+
+    name = best.name
+    suffix = "_wsgi.py"
+    if not name.endswith(suffix):
+        return None
+
+    host_part = name[: -len(suffix)]
+    host = host_part.replace("_", ".")
+    if not host:
+        return None
+    return f"https://{host}"
+
+
 def _build_webhook_url() -> str:
     url = (os.getenv("TELEGRAM_WEBHOOK_URL") or "").strip()
     if url:
@@ -97,6 +128,9 @@ async def _set_webhook() -> None:
 def main() -> None:
     load_dotenv()
     _load_env_from_pythonanywhere_wsgi()
+    inferred_base = _infer_pythonanywhere_base_url()
+    if inferred_base:
+        os.environ["TELEGRAM_WEBHOOK_BASE_URL"] = inferred_base
     asyncio.run(_set_webhook())
 
 
