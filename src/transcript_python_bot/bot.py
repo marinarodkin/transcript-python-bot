@@ -15,7 +15,10 @@ from dotenv import load_dotenv
 from telegram import InputFile, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-import markdown as md
+try:
+    import markdown as md
+except ImportError:  # pragma: no cover - depends on deployment env
+    md = None
 
 from .checkLink import is_valid_youtube_url, normalize_youtube_url
 from .config import RuntimeLimits, load_notion_config, load_openai_config, load_runtime_limits
@@ -55,9 +58,11 @@ def _sanitize_filename(name: str, limit: int = 50) -> str:
 
 def _build_html_document(title: str, content: str, *, render_markdown: bool) -> str:
     safe_title = html_escape(title or "Transcript")
-    if render_markdown:
+    if render_markdown and md is not None:
         body_html = md.markdown(content or "", extensions=["extra", "sane_lists"])
     else:
+        if render_markdown and md is None:
+            logger.warning("markdown package is not installed; falling back to plain text html rendering")
         body_html = f"<pre>{html_escape(content or '')}</pre>"
     return (
         "<!doctype html>\n"

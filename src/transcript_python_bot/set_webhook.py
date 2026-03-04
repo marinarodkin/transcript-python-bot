@@ -2,9 +2,66 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import Bot
+
+
+_ENV_ASSIGN_RE = re.compile(
+    r"""os\.environ\[\s*["'](?P<key>[A-Z0-9_]+)["']\s*\]\s*=\s*["'](?P<value>.*?)["']""",
+)
+_NEEDED_KEYS = (
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_WEBHOOK_URL",
+    "TELEGRAM_WEBHOOK_BASE_URL",
+    "TELEGRAM_WEBHOOK_PATH",
+    "TELEGRAM_WEBHOOK_SECRET_TOKEN",
+)
+
+
+def _find_pythonanywhere_wsgi_files() -> list[Path]:
+    explicit = (os.getenv("PYTHONANYWHERE_WSGI_FILE") or "").strip()
+    if explicit:
+        p = Path(explicit)
+        if p.exists():
+            return [p]
+
+    user = (os.getenv("USER") or "").strip()
+    if not user:
+        return []
+
+    var_www = Path("/var/www")
+    if not var_www.exists():
+        return []
+
+    return sorted(var_www.glob(f"{user}_*wsgi.py"))
+
+
+def _load_env_from_pythonanywhere_wsgi() -> None:
+    # PythonAnywhere users often keep secrets in WSGI only.
+    if all((os.getenv(key) or "").strip() for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_PATH")):
+        return
+
+    for wsgi_path in _find_pythonanywhere_wsgi_files():
+        try:
+            text = wsgi_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+        loaded_any = False
+        for match in _ENV_ASSIGN_RE.finditer(text):
+            key = match.group("key")
+            if key not in _NEEDED_KEYS:
+                continue
+            if (os.getenv(key) or "").strip():
+                continue
+            os.environ[key] = match.group("value")
+            loaded_any = True
+
+        if loaded_any and all((os.getenv(key) or "").strip() for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_PATH")):
+            return
 
 
 def _build_webhook_url() -> str:
@@ -39,9 +96,9 @@ async def _set_webhook() -> None:
 
 def main() -> None:
     load_dotenv()
+    _load_env_from_pythonanywhere_wsgi()
     asyncio.run(_set_webhook())
 
 
 if __name__ == "__main__":
     main()
-
