@@ -19,6 +19,13 @@ _NEEDED_KEYS = (
     "TELEGRAM_WEBHOOK_PATH",
     "TELEGRAM_WEBHOOK_SECRET_TOKEN",
 )
+_WSGI_PRIORITY_KEYS = {
+    "TELEGRAM_WEBHOOK_URL",
+    "TELEGRAM_WEBHOOK_BASE_URL",
+    "TELEGRAM_WEBHOOK_PATH",
+    "TELEGRAM_WEBHOOK_SECRET_TOKEN",
+    "TELEGRAM_BOT_TOKEN",
+}
 
 
 def _find_pythonanywhere_wsgi_files() -> list[Path]:
@@ -41,9 +48,7 @@ def _find_pythonanywhere_wsgi_files() -> list[Path]:
 
 def _load_env_from_pythonanywhere_wsgi() -> None:
     # PythonAnywhere users often keep secrets in WSGI only.
-    if all((os.getenv(key) or "").strip() for key in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_WEBHOOK_PATH")):
-        return
-
+    # Always parse WSGI to avoid stale shell-exported values (e.g. old webhook path).
     for wsgi_path in _find_pythonanywhere_wsgi_files():
         try:
             text = wsgi_path.read_text(encoding="utf-8", errors="ignore")
@@ -55,7 +60,7 @@ def _load_env_from_pythonanywhere_wsgi() -> None:
             key = match.group("key")
             if key not in _NEEDED_KEYS:
                 continue
-            if (os.getenv(key) or "").strip():
+            if key not in _WSGI_PRIORITY_KEYS and (os.getenv(key) or "").strip():
                 continue
             os.environ[key] = match.group("value")
             loaded_any = True
@@ -123,6 +128,7 @@ async def _set_webhook() -> None:
         secret_token=secret_token,
         drop_pending_updates=True,
     )
+    print(f"Webhook set: {url}")
 
 
 def main() -> None:
