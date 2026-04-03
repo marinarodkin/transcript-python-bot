@@ -8,12 +8,15 @@ from html import unescape
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-from langchain_community.document_loaders import YoutubeLoader
-
 from .checkLink import extract_video_id, normalize_youtube_url
 
 
 logger = logging.getLogger(__name__)
+
+try:
+    from langchain_community.document_loaders import YoutubeLoader
+except Exception:
+    YoutubeLoader = None
 
 
 @dataclass(frozen=True)
@@ -61,23 +64,26 @@ def fetch_video_info(url: str, languages: list[str] | None = None) -> VideoInfo:
     oembed_error: Exception | None = None
     html_error: Exception | None = None
 
-    try:
-        loader = YoutubeLoader.from_youtube_url(
-            canonical_url,
-            add_video_info=True,
-            language=languages,
-        )
-        docs = loader.load()
-        metadata = docs[0].metadata if docs else {}
-        if not isinstance(metadata, dict):
-            metadata = {}
+    if YoutubeLoader is not None:
+        try:
+            loader = YoutubeLoader.from_youtube_url(
+                canonical_url,
+                add_video_info=True,
+                language=languages,
+            )
+            docs = loader.load()
+            metadata = docs[0].metadata if docs else {}
+            if not isinstance(metadata, dict):
+                metadata = {}
 
-        title = str(metadata.get("title") or metadata.get("video_title") or "").strip()
-        author = str(metadata.get("author") or metadata.get("channel") or metadata.get("creator") or "").strip()
-        description = str(metadata.get("description") or metadata.get("video_description") or "").strip()
-    except Exception as exc:
-        loader_error = exc
-        logger.debug("YoutubeLoader video info failed url=%s", canonical_url, exc_info=True)
+            title = str(metadata.get("title") or metadata.get("video_title") or "").strip()
+            author = str(metadata.get("author") or metadata.get("channel") or metadata.get("creator") or "").strip()
+            description = str(metadata.get("description") or metadata.get("video_description") or "").strip()
+        except Exception as exc:
+            loader_error = exc
+            logger.debug("YoutubeLoader video info failed url=%s", canonical_url, exc_info=True)
+    else:
+        logger.debug("YoutubeLoader unavailable; using oEmbed/HTML fallback only")
 
     if not title or not author:
         try:

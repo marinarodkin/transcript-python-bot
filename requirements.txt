@@ -2,12 +2,11 @@ openai>=1.40.0
 python-dotenv>=1.0.1
 python-telegram-bot>=21.6
 Flask>=3.0.0
-youtube-transcript-api==0.6.2
+youtube-transcript-api==1.2.4
 requests==2.32.3
 urllib3==2.2.3
 notion-client>=2.2.1
 PyYAML>=6.0.2
-langchain-community>=0.3.0
 langdetect>=1.0.9
 pytube>=15.0.0
 markdown>=3.7
