@@ -9,7 +9,6 @@ from urllib.parse import quote
 
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import NoTranscriptFound
-from youtube_transcript_api.proxies import GenericProxyConfig
 
 import requests
 import urllib3
@@ -85,13 +84,12 @@ def _join_snippets(snippets: Iterable) -> str:
 @lru_cache(maxsize=1)
 def _ytt() -> YouTubeTranscriptApi:
     proxy_url = _webshare_proxy_url()
-    print("[get_transcript] creating YouTubeTranscriptApi proxy_mode=webshare_generic")
-    return YouTubeTranscriptApi(
-        proxy_config=GenericProxyConfig(
-            http_url=proxy_url,
-            https_url=proxy_url,
-        )
-    )
+    os.environ["HTTP_PROXY"] = proxy_url
+    os.environ["HTTPS_PROXY"] = proxy_url
+    os.environ["http_proxy"] = proxy_url
+    os.environ["https_proxy"] = proxy_url
+    print("[get_transcript] creating YouTubeTranscriptApi proxy_mode=env_http_https")
+    return YouTubeTranscriptApi()
 
 
 def _find_transcript(transcript_list, language_codes: list[str]):
@@ -140,7 +138,7 @@ def fetch_transcript(
         )
     print(
         "[get_transcript] mode:",
-        "proxy_mode=webshare_generic",
+        "proxy_mode=env_http_https",
         "fallback_to_direct=false",
     )
 
