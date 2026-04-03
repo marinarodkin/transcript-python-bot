@@ -5,10 +5,11 @@ import time
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Iterable
+from urllib.parse import quote
 
 from youtube_transcript_api import YouTubeTranscriptApi
 from youtube_transcript_api._errors import NoTranscriptFound
-from youtube_transcript_api.proxies import WebshareProxyConfig
+from youtube_transcript_api.proxies import GenericProxyConfig
 
 import requests
 import urllib3
@@ -49,10 +50,23 @@ def _require_env(name: str) -> str:
     return value
 
 
-def _parse_locations(value: str | None) -> list[str]:
-    if not value:
-        return ["de", "nl", "pl"]
-    return [x.strip().lower() for x in value.split(",") if x.strip()]
+def _env_bool(name: str, default: bool) -> bool:
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"[get_transcript] Invalid boolean env {name}={raw!r}")
+
+
+def _webshare_proxy_url() -> str:
+    username = _require_env("WEBSHARE_PROXY_USERNAME")
+    password = _require_env("WEBSHARE_PROXY_PASSWORD")
+    safe_username = quote(username, safe="")
+    safe_password = quote(password, safe="")
+    return f"http://{safe_username}:{safe_password}@p.webshare.io:80"
 
 
 def _join_snippets(snippets: Iterable) -> str:
@@ -65,33 +79,30 @@ def _join_snippets(snippets: Iterable) -> str:
 
 
 # ---------------------------------------------------------------------------
-# YouTube API (always proxy, lazy init)
+# YouTube API (lazy init)
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
 def _ytt() -> YouTubeTranscriptApi:
-    print("[get_transcript] creating YouTubeTranscriptApi with Webshare proxy")
-
-    username = _require_env("WEBSHARE_PROXY_USERNAME")
-    password = _require_env("WEBSHARE_PROXY_PASSWORD")
-    locations = _parse_locations(os.getenv("WEBSHARE_PROXY_LOCATIONS"))
-
-    print(
-        "[get_transcript] proxy config:",
-        f"username={'***' if username else 'NONE'}",
-        f"locations={locations}",
-    )
-
-    api = YouTubeTranscriptApi(
-        proxy_config=WebshareProxyConfig(
-            proxy_username=username,
-            proxy_password=password,
-            filter_ip_locations=locations,
+    proxy_url = _webshare_proxy_url()
+    print("[get_transcript] creating YouTubeTranscriptApi proxy_mode=webshare_generic")
+    return YouTubeTranscriptApi(
+        proxy_config=GenericProxyConfig(
+            http_url=proxy_url,
+            https_url=proxy_url,
         )
     )
 
-    print("[get_transcript] YouTubeTranscriptApi created")
-    return api
+
+def _find_transcript(transcript_list, language_codes: list[str]):
+    for language_code in language_codes:
+        try:
+            transcript = transcript_list.find_transcript([language_code])
+            print("[get_transcript] transcript selected:", transcript.language_code)
+            return transcript
+        except NoTranscriptFound:
+            continue
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -109,30 +120,39 @@ def fetch_transcript(
     print("[get_transcript] raw url:", url)
 
     video_id = extract_video_id(url)
-    supported_fallback_languages = ["ru", "en", "de"]
     preferred_languages = languages or ["ru"]
+    supported_fallback_languages = list(
+        dict.fromkeys([*preferred_languages, "ru", "en", "de"])
+    )
 
     print("[get_transcript] video_id:", video_id)
     print("[get_transcript] preferred languages:", preferred_languages)
+
+    use_webshare_proxy = _env_bool("USE_WEBSHARE_PROXY", True)
+    fallback_to_direct = _env_bool("FALLBACK_TO_DIRECT_ON_PROXY_ERROR", False)
+    if not use_webshare_proxy:
+        raise RuntimeError(
+            "[get_transcript] USE_WEBSHARE_PROXY=false is not supported in this deployment"
+        )
+    if fallback_to_direct:
+        raise RuntimeError(
+            "[get_transcript] FALLBACK_TO_DIRECT_ON_PROXY_ERROR=true is disabled in proxy-only mode"
+        )
+    print(
+        "[get_transcript] mode:",
+        "proxy_mode=webshare_generic",
+        "fallback_to_direct=false",
+    )
 
     transcript_list = _ytt().list(video_id)
     print("[get_transcript] transcript_list received")
 
     print("[get_transcript] start find_transcript")
-    transcript = None
-    for language_code in supported_fallback_languages:
-        try:
-            transcript = transcript_list.find_transcript([language_code])
-            print("[get_transcript] transcript selected:", transcript.language_code)
-            break
-        except NoTranscriptFound:
-            continue
-
+    transcript = _find_transcript(transcript_list, supported_fallback_languages)
     if transcript is None:
         raise NoSupportedTranscriptFound(video_id=video_id, tried_languages=supported_fallback_languages)
 
     last_error: Exception | None = None
-
     for attempt in range(1, max_attempts + 1):
         try:
             print(f"[get_transcript] fetch attempt {attempt}/{max_attempts}")

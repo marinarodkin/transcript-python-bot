@@ -28,9 +28,11 @@ OPENAI_API_KEY=your_openai_key_here
 
 # Опционально:
 TRANSCRIPT_LANGUAGES=ru,en
+USE_WEBSHARE_PROXY=true
+# В текущем режиме деплоя fallback в direct отключён
+FALLBACK_TO_DIRECT_ON_PROXY_ERROR=false
 WEBSHARE_PROXY_USERNAME=your_proxy_username
 WEBSHARE_PROXY_PASSWORD=your_proxy_password
-WEBSHARE_PROXY_LOCATIONS=de,nl,pl
 NOTION_API_KEY=your_notion_key
 NOTION_DATABASE_ID=your_database_id
 TELEGRAM_CHANNEL_ID=your_channel_id
@@ -86,8 +88,6 @@ LOG_LEVEL=DEBUG
 HTTPX_LOG_LEVEL=INFO
 TELEGRAM_LOG_LEVEL=INFO
 ```
-
-
 
 
 
